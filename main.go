@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	initDB()
+	
 
 	err := godotenv.Load()
 	if err != nil {
@@ -16,6 +16,8 @@ func main() {
 		return
 	}
 
+	initDB()
+	
 	//http.HandleFunc("/tickets", ticketsHandler)
 	//http.Handle("/tickets", authMiddleware(http.HandlerFunc(ticketsHandler)))
 	//http.Handle("/tickets/", authMiddleware(http.HandlerFunc(ticketsHandler)))

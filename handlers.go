@@ -4,6 +4,7 @@ import (
 	sql "database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -50,13 +51,6 @@ func validateTicket(ticket Ticket) error {
 		return fmt.Errorf("description is required")
 	}
 
-	// switch ticket.Priority {
-	// case "low", "medium", "high":
-	// 	return nil
-	// default:
-	// 	return fmt.Errorf("priority must be low, medium, or high")
-	// }
-
 	return validatePriority(ticket.Priority)
 
 }
@@ -84,27 +78,20 @@ func createTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ticket.Status = "open"
+	ticket.Status = "Open"
 
-	result, err := db.Exec(
-		"INSERT INTO tickets (title, description, priority, status) VALUES (?, ?, ?, ?)",
+	err = db.QueryRow(
+		"INSERT INTO tickets (title, description, priority, status) VALUES ($1, $2, $3, $4) RETURNING id",
 		ticket.Title,
 		ticket.Description,
 		ticket.Priority,
 		ticket.Status,
-	)
+	).Scan(&ticket.ID)
+
 	if err != nil {
 		http.Error(w, "Failed to create ticket", http.StatusInternalServerError)
 		return
 	}
-
-	id, err := result.LastInsertId()
-	if err != nil {
-		http.Error(w, "Failed to get ticket ID", http.StatusInternalServerError)
-		return
-	}
-
-	ticket.ID = int(id)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ticket)
@@ -112,24 +99,9 @@ func createTicket(w http.ResponseWriter, r *http.Request) {
 
 func getTickets(w http.ResponseWriter, r *http.Request) {
 
-	// 	rows, err := db.Query(`
-	// 	SELECT id, title, description, priority, status
-	// 	FROM tickets
-	// `)
-
-	// if err != nil {
-	// 	http.Error(w, "Failed to get tickets", http.StatusInternalServerError)
-	// 	return
-	// }
-
 	status := r.URL.Query().Get("status")
 	priority := r.URL.Query().Get("priority")
 	search := r.URL.Query().Get("search")
-	// page := r.URL.Query().Get("page")
-	// limit := r.URL.Query().Get("limit")
-
-	// pageString := r.URL.Query().Get("page")
-	// limitString := r.URL.Query().Get("limit")
 
 	sort := r.URL.Query().Get("sort")
 	order := r.URL.Query().Get("order")
@@ -155,30 +127,6 @@ func getTickets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// page := 1
-	// limit := 10
-	// var err error
-
-	// if pageString != "" {
-
-	// 	page, err = strconv.Atoi(pageString)
-	// 	if err != nil || page < 1 {
-	// 		http.Error(w, "Invalid page", http.StatusBadRequest)
-	// 		return
-	// 	}
-	// }
-
-	// if limitString != "" {
-
-	// 	limit, err = strconv.Atoi(limitString)
-	// 	if err != nil || limit < 1 || limit > 100{
-	// 		http.Error(w, "Limit must be between 1 and 100", http.StatusBadRequest)
-	// 		return
-	// 	}
-	// }
-
-	// offset := (page - 1) * limit
-
 	page, limit, err := getPagination(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -194,8 +142,24 @@ func getTickets(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// if priority != "" {
+	// 	priorityInt, err := strconv.Atoi(priority)
+	// 	if err != nil {
+	// 		http.Error(w, "priority must be a number", http.StatusBadRequest)
+	// 		return
+	// 	}
+
+	var priorityInt int
+
 	if priority != "" {
-		if err := validatePriority(priority); err != nil {
+		var err error
+
+		priorityInt, err = strconv.Atoi(priority)
+		if err != nil {
+			http.Error(w, "priority must be a number", http.StatusBadRequest)
+			return
+		}
+		if err := validatePriority(priorityInt); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -210,17 +174,20 @@ func getTickets(w http.ResponseWriter, r *http.Request) {
 	args := []any{}
 
 	if status != "" {
-		query += " AND status = ?"
+		query += fmt.Sprintf(" AND status = $%d", len(args)+1)
+		// query += " AND status = ?"
 		args = append(args, status)
 	}
 
 	if priority != "" {
-		query += " AND priority = ?"
-		args = append(args, priority)
+		query += fmt.Sprintf(" AND priority = $%d", len(args)+1)
+		// query += " AND priority = ?"
+		args = append(args, priorityInt)
 	}
 
 	if search != "" {
-		query += " AND (title LIKE ? OR description LIKE ?)"
+
+		query += fmt.Sprintf(" AND (title ILIKE $%d OR description ILIKE $%d)", len(args)+1, len(args)+2)
 		searchTerm := "%" + search + "%"
 		args = append(args, searchTerm, searchTerm)
 	}
@@ -229,28 +196,37 @@ func getTickets(w http.ResponseWriter, r *http.Request) {
 	countArgs := []any{}
 
 	if status != "" {
-		countQuery += " AND status = ?"
+		countQuery += fmt.Sprintf(" AND status = $%d", len(countArgs)+1)
 		countArgs = append(countArgs, status)
 	}
 
 	if priority != "" {
-		countQuery += " AND priority = ?"
-		countArgs = append(countArgs, priority)
+		countQuery += fmt.Sprintf(" AND priority = $%d", len(countArgs)+1)
+		countArgs = append(countArgs, priorityInt)
 	}
 
 	if search != "" {
-		countQuery += " AND (title LIKE ? OR description LIKE ?)"
+		countQuery += fmt.Sprintf(
+			" AND (title ILIKE $%d OR description ILIKE $%d)",
+			len(countArgs)+1,
+			len(countArgs)+2,
+		)
+
 		searchTerm := "%" + search + "%"
 		countArgs = append(countArgs, searchTerm, searchTerm)
 	}
 
 	query += " ORDER BY " + sort + " " + strings.ToUpper(order)
-	query += " LIMIT ? OFFSET ?"
+
+	query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
+
 	args = append(args, limit, offset)
 
 	rows, err := db.Query(query, args...)
 	if err != nil {
-		http.Error(w, "Failed to get tickets", http.StatusInternalServerError)
+
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+
 		return
 	}
 
@@ -331,11 +307,6 @@ type responseWriter struct {
 	http.ResponseWriter
 	statusCode int
 }
-
-// func (rw *responseWriter) WriteHeader(statusCode int) {
-// 	rw.statusCode = statusCode
-// 	rw.ResponseWriter.WriteHeader(statusCode)
-// }
 
 func (rw *responseWriter) Write(data []byte) (int, error) {
 	if rw.statusCode == 0 {
@@ -442,7 +413,7 @@ func updateTicket(w http.ResponseWriter, r *http.Request) {
 
 	var update struct {
 		Status   string `json:"status"`
-		Priority string `json:"priority"`
+		Priority *int   `json:"priority"`
 	}
 
 	err = json.NewDecoder(r.Body).Decode(&update)
@@ -451,10 +422,6 @@ func updateTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	//		if err := validateStatus(update.Status); err != nil {
-	//		http.Error(w, err.Error(), http.StatusBadRequest)
-	//		return
-	//	}
 	if update.Status != "" {
 		if err := validateStatus(update.Status); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -462,30 +429,24 @@ func updateTicket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if update.Priority != "" {
-		if err := validatePriority(update.Priority); err != nil {
+	if update.Priority != nil {
+		if err := validatePriority(*update.Priority); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 	}
 
-	// result, err := db.Exec(
-	// 	"UPDATE tickets SET status = ? WHERE id = ?",
-	// 	update.Status,
-	// 	id,
-	// )
-
 	updates := []string{}
 	args := []any{}
 
 	if update.Status != "" {
-		updates = append(updates, "status = ?")
+		updates = append(updates, fmt.Sprintf("status = $%d", len(args)+1))
 		args = append(args, update.Status)
 	}
 
-	if update.Priority != "" {
-		updates = append(updates, "priority = ?")
-		args = append(args, update.Priority)
+	if update.Priority != nil {
+		updates = append(updates, fmt.Sprintf("priority = $%d", len(args)+1))
+		args = append(args, *update.Priority)
 	}
 
 	if len(updates) == 0 {
@@ -495,18 +456,13 @@ func updateTicket(w http.ResponseWriter, r *http.Request) {
 
 	args = append(args, id)
 
-	query := "UPDATE tickets SET " + strings.Join(updates, ", ") + " WHERE id = ?"
+	query := "UPDATE tickets SET " + strings.Join(updates, ", ") + fmt.Sprintf(" WHERE id = $%d", len(args))
 
 	result, err := db.Exec(query, args...)
 	if err != nil {
 		http.Error(w, "Failed to update ticket", http.StatusInternalServerError)
 		return
 	}
-
-	// if err != nil {
-	// 	http.Error(w, "Failed to update ticket", http.StatusInternalServerError)
-	// 	return
-	// }
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
@@ -524,7 +480,7 @@ func updateTicket(w http.ResponseWriter, r *http.Request) {
 	err = db.QueryRow(`
 		SELECT id, title, description, priority, status
 		FROM tickets
-		WHERE id = ?
+		WHERE id = $1
 	`, id).Scan(
 		&ticket.ID,
 		&ticket.Title,
@@ -542,12 +498,12 @@ func updateTicket(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(ticket)
 }
 
-func validatePriority(priority string) error {
+func validatePriority(priority int) error {
 	switch priority {
-	case "low", "medium", "high":
+	case 1, 2, 3:
 		return nil
 	default:
-		return fmt.Errorf("priority must be low, medium, or high")
+		return fmt.Errorf("priority must be 1, 2, or 3")
 	}
 }
 
@@ -561,10 +517,12 @@ func deleteTicket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := db.Exec(
-		"DELETE FROM tickets WHERE id = ?",
+		"DELETE FROM tickets WHERE id = $1",
 		id,
 	)
+
 	if err != nil {
+		log.Println("DELETE ERROR:", err)
 		http.Error(w, "Failed to delete ticket", http.StatusInternalServerError)
 		return
 	}
